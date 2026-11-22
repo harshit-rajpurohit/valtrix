@@ -585,6 +585,7 @@
           if (isModalOpen('settings-modal')) {
             renderSettingsBody();
           }
+          renderActiveTab();
         });
       } catch (err) {
         handleFirebaseAuthError(err);
@@ -654,7 +655,6 @@
           code === 'auth/popup-closed-by-user' ||
           code === 'auth/operation-not-supported-in-this-environment'
         ) {
-          // Automatic fallback to redirect on mobile/restricted browsers
           try {
             showToast('Redirecting to Google Sign-In...');
             await auth.signInWithRedirect(provider);
@@ -674,12 +674,13 @@
         lastCloudSyncTime = '';
         showToast('Signed out of Google');
         renderSettingsBody();
+        renderActiveTab();
       } catch (err) {
         handleFirebaseAuthError(err);
       }
     }
 
-    // Merge on first sign-in so local data is never wiped
+    // Merge on first sign-in so neither cloud nor local data is accidentally wiped
     async function syncOnSignIn(user) {
       if (!db || !user) return;
       isSyncingNow = true;
@@ -691,7 +692,6 @@
 
         if (snap.exists && snap.data() && snap.data().payload) {
           const cloudState = normalizeState(snap.data().payload);
-          // Smart merge: keep cloud state as base, merge any local-only transactions/goals/emis/subs by ID
           const merged = mergeLocalAndCloudState(state, cloudState);
           state = merged;
           saveStateLocalOnly();
@@ -703,7 +703,6 @@
           applyTheme();
           renderActiveTab();
         } else {
-          // First time signing in — upload local data to Firestore
           await docRef.set({
             payload: state,
             updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -722,22 +721,34 @@
     }
 
     function mergeLocalAndCloudState(localSt, cloudSt) {
-      const mergeById = (cloudArr, localArr) => {
+      const mergeById = (primaryArr, secondaryArr) => {
         const map = new Map();
-        (cloudArr || []).forEach(item => map.set(item.id, item));
-        (localArr || []).forEach(item => {
+        (primaryArr || []).forEach(item => map.set(item.id, item));
+        (secondaryArr || []).forEach(item => {
           if (!map.has(item.id)) map.set(item.id, item);
         });
         return Array.from(map.values());
       };
 
-      const cloudHasTx = Array.isArray(cloudSt.transactions) && cloudSt.transactions.length > 0;
+      const cloudHasData = (
+        (Array.isArray(cloudSt.transactions) && cloudSt.transactions.length > 0) ||
+        (Array.isArray(cloudSt.savingsGoals) && cloudSt.savingsGoals.length > 0) ||
+        (Array.isArray(cloudSt.emis) && cloudSt.emis.length > 0) ||
+        (Array.isArray(cloudSt.subscriptions) && cloudSt.subscriptions.length > 0) ||
+        Number(cloudSt.totalBalance) !== 0 ||
+        Number(cloudSt.monthlyAllowance) !== 0 ||
+        (Array.isArray(cloudSt.categories) && cloudSt.categories.some(c => Number(c.allowance) > 0))
+      );
+
+      const primaryCategories = cloudHasData ? cloudSt.categories : localSt.categories;
+      const secondaryCategories = cloudHasData ? localSt.categories : cloudSt.categories;
+
       return normalizeState({
         ...cloudSt,
         theme: localSt.theme || cloudSt.theme || 'dark',
-        totalBalance: cloudHasTx ? cloudSt.totalBalance : localSt.totalBalance,
-        monthlyAllowance: cloudSt.monthlyAllowance || localSt.monthlyAllowance,
-        categories: mergeById(cloudSt.categories, localSt.categories),
+        totalBalance: cloudHasData ? cloudSt.totalBalance : localSt.totalBalance,
+        monthlyAllowance: cloudHasData ? cloudSt.monthlyAllowance : localSt.monthlyAllowance,
+        categories: mergeById(primaryCategories, secondaryCategories),
         transactions: mergeById(cloudSt.transactions, localSt.transactions),
         savingsGoals: mergeById(cloudSt.savingsGoals, localSt.savingsGoals),
         emis: mergeById(cloudSt.emis, localSt.emis),
@@ -777,9 +788,9 @@
     }
 
     // =========================================================================
-    // 2. STATE ENGINE, AUTO-MIGRATION & INDIAN RUPEE (₹) FORMATTING
+    // 2. STATE ENGINE (CLEAN RELEASE START), AUTO-MIGRATION & INR FORMATTING
     // =========================================================================
-    const STORAGE_KEY = 'valtrix_v3_state';
+    const STORAGE_KEY = 'valtrix_v3_release';
 
     function getTodayISO() {
       const now = new Date();
@@ -804,74 +815,23 @@
 
     function getDefaultCategories() {
       return [
-        { id: 'cat_eating_out', name: 'Eating Out', icon: '☕', allowance: 4000, color: '#A855F7', lastMonthSpend: 3650 },
-        { id: 'cat_grocery', name: 'Grocery', icon: '🛒', allowance: 5500, color: '#10B981', lastMonthSpend: 4800 },
-        { id: 'cat_gaming', name: 'Gaming & Tech', icon: '🎮', allowance: 3500, color: '#EC4899', lastMonthSpend: 4200 },
-        { id: 'cat_transport', name: 'Transport', icon: '🚕', allowance: 3000, color: '#38BDF8', lastMonthSpend: 2700 },
-        { id: 'cat_shopping', name: 'Shopping', icon: '🛍️', allowance: 4500, color: '#F59E0B', lastMonthSpend: 5100 },
-        { id: 'cat_bills', name: 'Bills & Subs', icon: '⚡', allowance: 5000, color: '#F43F5E', lastMonthSpend: 4400 },
-        { id: 'cat_fitness', name: 'Fitness & Sports', icon: '🏊', allowance: 2000, color: '#14B8A6', lastMonthSpend: 1500 },
-        { id: 'cat_other', name: 'Other', icon: '📦', allowance: 2000, color: '#94A3B8', lastMonthSpend: 1100 }
+        { id: 'cat_eating_out', name: 'Eating Out', icon: '☕', allowance: 0, color: '#A855F7', lastMonthSpend: 0 },
+        { id: 'cat_grocery', name: 'Grocery', icon: '🛒', allowance: 0, color: '#10B981', lastMonthSpend: 0 },
+        { id: 'cat_gaming', name: 'Gaming & Tech', icon: '🎮', allowance: 0, color: '#EC4899', lastMonthSpend: 0 },
+        { id: 'cat_transport', name: 'Transport', icon: '🚕', allowance: 0, color: '#38BDF8', lastMonthSpend: 0 },
+        { id: 'cat_shopping', name: 'Shopping', icon: '🛍️', allowance: 0, color: '#F59E0B', lastMonthSpend: 0 },
+        { id: 'cat_bills', name: 'Bills & Subs', icon: '⚡', allowance: 0, color: '#F43F5E', lastMonthSpend: 0 },
+        { id: 'cat_fitness', name: 'Fitness & Sports', icon: '🏊', allowance: 0, color: '#14B8A6', lastMonthSpend: 0 },
+        { id: 'cat_other', name: 'Other', icon: '📦', allowance: 0, color: '#94A3B8', lastMonthSpend: 0 }
       ];
     }
 
-    function getInitialDemoState() {
+    function getCleanResetState(theme = 'dark') {
       return {
-        theme: 'dark',
-        totalBalance: 142500,
-        monthlyAllowance: 25000,
-        categories: getDefaultCategories(),
-        transactions: [
-          { id: 'tx_1', type: 'expense', amount: 420, categoryId: 'cat_eating_out', note: 'Iced Latte & Croissant', date: getTodayISO() },
-          { id: 'tx_2', type: 'expense', amount: 1450, categoryId: 'cat_eating_out', note: 'Dinner at Rooftop Bistro', date: daysAgoISO(1) },
-          { id: 'tx_3', type: 'expense', amount: 2499, categoryId: 'cat_gaming', note: 'PS5 DualSense Dock', date: daysAgoISO(2) },
-          { id: 'tx_4', type: 'income', amount: 25000, categoryId: null, note: 'Monthly Allowance Credited', date: daysAgoISO(3) },
-          { id: 'tx_5', type: 'expense', amount: 1850, categoryId: 'cat_grocery', note: 'Weekly Organic Veggies & Milk', date: daysAgoISO(4) },
-          { id: 'tx_6', type: 'expense', amount: 680, categoryId: 'cat_transport', note: 'Uber & Metro Top-up', date: daysAgoISO(5) },
-          { id: 'tx_7', type: 'savings', amount: 2500, categoryId: 'cat_savings', goalId: 'goal_ps5', note: 'Saved for Buy PS5 Console', date: daysAgoISO(6) },
-          { id: 'tx_8', type: 'expense', amount: 1199, categoryId: 'cat_bills', note: 'Fiber Broadband Bill', date: daysAgoISO(8) }
-        ],
-        savingsGoals: [
-          { id: 'goal_ps5', name: 'Buy PS5 Console', icon: '🎮', saved: 30000, target: 50000 },
-          { id: 'goal_house', name: 'Dream House Downpayment', icon: '🏡', saved: 5000000, target: 7000000 },
-          { id: 'goal_emergency', name: 'Emergency Stash', icon: '🛡️', saved: 120000, target: 200000 }
-        ],
-        emis: [
-          {
-            id: 'emi_1',
-            name: 'iPhone 16 Pro EMI',
-            monthlyAmount: 4500,
-            totalMonths: 12,
-            dueDay: 5,
-            startMonth: '2026-08',
-            paidMonths: [0, 1, 2],
-            txMap: {}
-          },
-          {
-            id: 'emi_2',
-            name: 'Gaming Monitor EMI',
-            monthlyAmount: 2200,
-            totalMonths: 6,
-            dueDay: 15,
-            startMonth: '2026-09',
-            paidMonths: [0, 1],
-            txMap: {}
-          }
-        ],
-        subscriptions: [
-          { id: 'sub_1', name: 'Spotify Premium', amount: 119, dueDay: 25, paidThisMonth: false, txId: null },
-          { id: 'sub_2', name: 'Gym & Swimming Club', amount: 1500, dueDay: 28, paidThisMonth: false, txId: null },
-          { id: 'sub_3', name: 'YouTube Premium', amount: 149, dueDay: 10, paidThisMonth: true, txId: null }
-        ]
-      };
-    }
-
-    function getCleanResetState() {
-      return {
-        theme: state.theme || 'dark',
+        theme: theme === 'light' ? 'light' : 'dark',
         totalBalance: 0,
-        monthlyAllowance: 25000,
-        categories: getDefaultCategories().map(c => ({ ...c, lastMonthSpend: 0 })),
+        monthlyAllowance: 0,
+        categories: getDefaultCategories().map(c => ({ ...c, allowance: 0, lastMonthSpend: 0 })),
         transactions: [],
         savingsGoals: [],
         emis: [],
@@ -881,7 +841,7 @@
 
     // Automatic migration from "Restaurants & Cafes" -> "Eating Out" and "Food & Groceries" -> "Grocery"
     function normalizeState(raw) {
-      const fallback = getInitialDemoState();
+      const fallback = getCleanResetState('dark');
       if (!raw || typeof raw !== 'object') return fallback;
 
       const idMap = {
@@ -900,7 +860,14 @@
           newName = 'Grocery';
           if (newIcon === '🥗') newIcon = '🛒';
         }
-        return { ...c, id: newId, name: newName, icon: newIcon, allowance: Number(c.allowance) || 0, lastMonthSpend: Number(c.lastMonthSpend) || 0 };
+        return {
+          ...c,
+          id: newId,
+          name: newName,
+          icon: newIcon,
+          allowance: Math.max(0, Number(c.allowance) || 0),
+          lastMonthSpend: Math.max(0, Number(c.lastMonthSpend) || 0)
+        };
       });
 
       const migratedTx = Array.isArray(raw.transactions)
@@ -925,7 +892,7 @@
       return {
         theme: raw.theme === 'light' ? 'light' : 'dark',
         totalBalance: Number(raw.totalBalance) || 0,
-        monthlyAllowance: Number(raw.monthlyAllowance) || 0,
+        monthlyAllowance: Math.max(0, Number(raw.monthlyAllowance) || 0),
         categories: migratedCats,
         transactions: migratedTx,
         savingsGoals: Array.isArray(raw.savingsGoals) ? raw.savingsGoals : [],
@@ -938,15 +905,15 @@
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (!raw) {
-          const demo = getInitialDemoState();
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(demo));
-          return demo;
+          const fresh = getCleanResetState('dark');
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh));
+          return fresh;
         }
         const normalized = normalizeState(JSON.parse(raw));
         localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
         return normalized;
       } catch (e) {
-        return getInitialDemoState();
+        return getCleanResetState('dark');
       }
     }
 
@@ -981,15 +948,17 @@
 
     function formatINRCompact(amount) {
       const num = Math.round(Number(amount) || 0);
-      if (num >= 100000) {
-        const l = num / 100000;
-        return `₹${Number.isInteger(l) ? l : l.toFixed(1)}L`;
+      const sign = num < 0 ? '−' : '';
+      const abs = Math.abs(num);
+      if (abs >= 100000) {
+        const l = abs / 100000;
+        return `${sign}₹${Number.isInteger(l) ? l : l.toFixed(1)}L`;
       }
-      if (num >= 1000) {
-        const k = num / 1000;
-        return `₹${Number.isInteger(k) ? k : k.toFixed(1)}k`;
+      if (abs >= 1000) {
+        const k = abs / 1000;
+        return `${sign}₹${Number.isInteger(k) ? k : k.toFixed(1)}k`;
       }
-      return `₹${num}`;
+      return `${sign}₹${abs}`;
     }
 
     function showToast(msg) {
@@ -1021,13 +990,14 @@
     }
 
     // =========================================================================
-    // 3. FINANCIAL CALCULATIONS
+    // 3. FINANCIAL CALCULATIONS (STRICT CURRENT-MONTH FILTERING)
     // =========================================================================
     function getMonthlySpendByCategory() {
       const map = {};
+      const currentMonth = getCurrentMonthYYYYMM();
       state.categories.forEach(c => map[c.id] = 0);
       state.transactions.forEach(tx => {
-        if (tx.type === 'expense' && tx.categoryId) {
+        if (tx.type === 'expense' && tx.categoryId && tx.date && String(tx.date).startsWith(currentMonth)) {
           map[tx.categoryId] = (map[tx.categoryId] || 0) + Number(tx.amount);
         }
       });
@@ -1035,14 +1005,16 @@
     }
 
     function getTotalMonthlyExpenseOnly() {
+      const currentMonth = getCurrentMonthYYYYMM();
       return state.transactions
-        .filter(t => t.type === 'expense')
+        .filter(t => t.type === 'expense' && t.date && String(t.date).startsWith(currentMonth))
         .reduce((sum, t) => sum + Number(t.amount), 0);
     }
 
     function getTotalMonthlySavingsTransfers() {
+      const currentMonth = getCurrentMonthYYYYMM();
       return state.transactions
-        .filter(t => t.type === 'savings')
+        .filter(t => t.type === 'savings' && t.date && String(t.date).startsWith(currentMonth))
         .reduce((sum, t) => sum + Number(t.amount), 0);
     }
 
@@ -1093,6 +1065,7 @@
 
     function renderActiveTab() {
       const container = document.getElementById('view-container');
+      if (!container) return;
       if (activeTab === 'home') {
         container.innerHTML = renderHomeTab();
       } else if (activeTab === 'analytics') {
@@ -1157,18 +1130,18 @@
                   </button>
                 </div>
                 <span class="text-xs font-extrabold ${allowancePct >= 95 ? 'text-rose-400' : 'text-[#C084FC]'}">
-                  ${allowancePct}% used
+                  ${allowance > 0 ? `${allowancePct}% used` : 'Not set'}
                 </span>
               </div>
 
               <div class="w-full h-2.5 rounded-full bg-white/10 overflow-hidden mb-2.5">
-                <div class="h-full rounded-full transition-all duration-500 ${allowancePct >= 100 ? 'bg-rose-500' : allowancePct >= 75 ? 'bg-amber-400' : 'bg-gradient-to-r from-[#7C3AED] to-[#C084FC]'}" style="width: ${allowancePct}%"></div>
+                <div class="h-full rounded-full transition-all duration-500 ${allowancePct >= 100 ? 'bg-rose-500' : allowancePct >= 75 ? 'bg-amber-400' : 'bg-gradient-to-r from-[#7C3AED] to-[#C084FC]'}" style="width: ${allowance > 0 ? allowancePct : 0}%"></div>
               </div>
 
               <div class="flex items-center justify-between text-[11px] gap-2">
                 <span class="text-slate-300 truncate">Used: <strong class="text-white">${formatINR(allowanceUsed)}</strong> / ${formatINR(allowance)}</span>
-                <span class="font-bold shrink-0 ${remainingAllowance < 0 ? 'text-rose-400' : 'text-emerald-400'}">
-                  ${remainingAllowance >= 0 ? `${formatINR(remainingAllowance)} left` : `${formatINR(Math.abs(remainingAllowance))} over`}
+                <span class="font-bold shrink-0 ${allowance <= 0 ? 'text-slate-400' : remainingAllowance < 0 ? 'text-rose-400' : 'text-emerald-400'}">
+                  ${allowance <= 0 ? 'Tap ✏️ to set' : (remainingAllowance >= 0 ? `${formatINR(remainingAllowance)} left` : `${formatINR(Math.abs(remainingAllowance))} over`)}
                 </span>
               </div>
             </div>
@@ -1244,9 +1217,15 @@
           if (!txSearchFilter.trim()) return true;
           const catName = tx.categoryId ? getCategoryById(tx.categoryId).name : 'Income';
           const q = txSearchFilter.toLowerCase();
-          return tx.note.toLowerCase().includes(q) || catName.toLowerCase().includes(q);
+          return String(tx.note || '').toLowerCase().includes(q) || catName.toLowerCase().includes(q);
         })
-        .sort((a, b) => new Date(b.date) - new Date(a.date));
+        .sort((a, b) => {
+          const dateCmp = String(b.date || '').localeCompare(String(a.date || ''));
+          if (dateCmp !== 0) return dateCmp;
+          const idNumA = Number(String(a.id || '').replace(/\D/g, '')) || 0;
+          const idNumB = Number(String(b.id || '').replace(/\D/g, '')) || 0;
+          return idNumB - idNumA;
+        });
 
       if (filteredTx.length === 0) {
         return `
@@ -1368,6 +1347,8 @@
               } else if (cap > 0 && rawPct >= 75) {
                 barColor = 'bg-amber-400';
                 badgeClass = 'bg-amber-500/15 text-amber-400';
+              } else if (cap <= 0) {
+                badgeClass = 'bg-slate-500/15 text-slate-400';
               }
 
               return `
@@ -1394,12 +1375,12 @@
                   </div>
 
                   <div class="w-full h-2 rounded-full bg-slate-200 dark:bg-[#0B071B] overflow-hidden mb-1.5">
-                    <div class="h-full rounded-full transition-all duration-500 ${barColor}" style="width: ${barPct}%"></div>
+                    <div class="h-full rounded-full transition-all duration-500 ${barColor}" style="width: ${cap > 0 ? barPct : 0}%"></div>
                   </div>
 
                   <div class="flex justify-end">
-                    <span class="text-[10px] font-semibold ${diff < 0 ? 'text-rose-400' : 'text-slate-500 dark:text-slate-400'}">
-                      ${diff >= 0 ? `${formatINR(diff)} remaining` : `${formatINR(Math.abs(diff))} over budget`}
+                    <span class="text-[10px] font-semibold ${cap > 0 && diff < 0 ? 'text-rose-400' : 'text-slate-500 dark:text-slate-400'}">
+                      ${cap <= 0 ? 'Tap ✏️ to set monthly cap' : (diff >= 0 ? `${formatINR(diff)} remaining` : `${formatINR(Math.abs(diff))} over budget`)}
                     </span>
                   </div>
                 </div>
@@ -1423,13 +1404,16 @@
           categoryBarChart.destroy();
           categoryBarChart = null;
         }
+        const catData = state.categories.map(c => spendMap[c.id] || 0);
+        const catMax = Math.max(0, ...catData);
+
         categoryBarChart = new Chart(ctx1, {
           type: 'bar',
           data: {
             labels: state.categories.map(c => c.name),
             datasets: [{
               label: 'Spent (₹)',
-              data: state.categories.map(c => spendMap[c.id] || 0),
+              data: catData,
               backgroundColor: state.categories.map(c => c.color),
               borderRadius: 8,
               borderSkipped: false
@@ -1448,6 +1432,8 @@
                 grid: { display: false }
               },
               y: {
+                beginAtZero: true,
+                suggestedMax: catMax === 0 ? 1000 : undefined,
                 ticks: { color: textColor, font: { size: 10 }, callback: (v) => v >= 1000 ? `₹${v / 1000}k` : `₹${v}` },
                 grid: { color: gridColor }
               }
@@ -1463,6 +1449,10 @@
           momChart = null;
         }
         const top5 = state.categories.slice(0, 5);
+        const lastMoData = top5.map(c => c.lastMonthSpend || 0);
+        const thisMoData = top5.map(c => spendMap[c.id] || 0);
+        const momMax = Math.max(0, ...lastMoData, ...thisMoData);
+
         momChart = new Chart(ctx2, {
           type: 'bar',
           data: {
@@ -1470,13 +1460,13 @@
             datasets: [
               {
                 label: 'Last Month',
-                data: top5.map(c => c.lastMonthSpend || 0),
+                data: lastMoData,
                 backgroundColor: isDark ? 'rgba(148, 163, 184, 0.35)' : 'rgba(100, 116, 139, 0.35)',
                 borderRadius: 6
               },
               {
                 label: 'This Month',
-                data: top5.map(c => spendMap[c.id] || 0),
+                data: thisMoData,
                 backgroundColor: '#A855F7',
                 borderRadius: 6
               }
@@ -1495,6 +1485,8 @@
                 grid: { display: false }
               },
               y: {
+                beginAtZero: true,
+                suggestedMax: momMax === 0 ? 1000 : undefined,
                 ticks: { color: textColor, font: { size: 10 }, callback: (v) => v >= 1000 ? `₹${v / 1000}k` : `₹${v}` },
                 grid: { color: gridColor }
               }
@@ -1598,7 +1590,12 @@
       const allowanceUsed = getTotalMonthlyAllowanceUsed();
       const remainingAllowance = allowance - allowanceUsed;
       const { totalDays, daysElapsed, daysLeft } = getMonthProgressStats();
-      const safeDailySpend = Math.max(0, Math.floor(remainingAllowance / daysLeft));
+
+      // Safe Daily Spend (never shows phantom values when allowance is 0)
+      const safeDailySpend = allowance > 0 ? Math.max(0, Math.floor(remainingAllowance / daysLeft)) : 0;
+      const safeDailySubtitle = allowance <= 0
+        ? 'Set monthly allowance'
+        : (remainingAllowance >= 0 ? `From ${formatINR(remainingAllowance)} left` : 'Over budget');
 
       const spendMap = getMonthlySpendByCategory();
       const totalExpenseOnly = getTotalMonthlyExpenseOnly();
@@ -1614,10 +1611,13 @@
       });
       const topCatPct = totalExpenseOnly > 0 ? Math.round((topAmt / totalExpenseOnly) * 100) : 0;
 
-      // Spending Pace & Forecast (replaces Monthly Savings Rate)
+      // Spending Pace & Forecast
       const dailyAvgSpend = Math.round(allowanceUsed / daysElapsed);
       const projectedMonthEnd = Math.round(dailyAvgSpend * totalDays);
-      const isOnTrack = allowance <= 0 ? true : projectedMonthEnd <= allowance;
+      const paceBadgeText = allowance <= 0 ? 'No limit' : (projectedMonthEnd <= allowance ? 'On Track' : 'Over');
+      const paceBadgeClass = allowance <= 0
+        ? 'bg-slate-500/15 text-slate-400'
+        : (projectedMonthEnd <= allowance ? 'bg-emerald-500/15 text-emerald-500' : 'bg-rose-500/15 text-rose-400');
 
       // Fixed Monthly Commitments
       const activeEmisTotal = state.emis
@@ -1626,6 +1626,7 @@
       const subsTotal = state.subscriptions.reduce((sum, s) => sum + Number(s.amount), 0);
       const fixedTotal = activeEmisTotal + subsTotal;
       const fixedPct = allowance > 0 ? Math.round((fixedTotal / allowance) * 100) : 0;
+      const fixedSubtitle = allowance > 0 ? `${fixedPct}% of allowance (EMIs + Subs)` : 'Set monthly allowance';
 
       // Budget Health Alerts
       const alertCats = state.categories.filter(c => {
@@ -1650,7 +1651,7 @@
             <div class="p-3.5 rounded-2xl bg-gradient-to-br from-[#140E2E] to-[#251552] text-white border border-purple-500/30 shadow-sm">
               <p class="text-[10px] font-bold uppercase tracking-wider text-purple-200/80 mb-1">Safe Daily Spend</p>
               <p class="text-lg font-extrabold text-emerald-400">${formatINR(safeDailySpend)}<span class="text-[10px] font-medium text-slate-300">/day</span></p>
-              <p class="text-[10px] text-slate-300 mt-1">From ${formatINR(Math.max(0, remainingAllowance))} left</p>
+              <p class="text-[10px] text-slate-300 mt-1">${safeDailySubtitle}</p>
             </div>
 
             <!-- 2. Top Spend Spot -->
@@ -1664,7 +1665,7 @@
             <div class="p-3.5 rounded-2xl bg-white dark:bg-[#140E2E] border border-slate-200/80 dark:border-purple-900/40 shadow-sm">
               <div class="flex items-center justify-between gap-1 mb-1">
                 <p class="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 truncate">Spending Pace</p>
-                <span class="text-[9px] font-extrabold px-1.5 py-0.5 rounded-md shrink-0 ${isOnTrack ? 'bg-emerald-500/15 text-emerald-500' : 'bg-rose-500/15 text-rose-400'}">${isOnTrack ? 'On Track' : 'Over'}</span>
+                <span class="text-[9px] font-extrabold px-1.5 py-0.5 rounded-md shrink-0 ${paceBadgeClass}">${paceBadgeText}</span>
               </div>
               <p class="text-base font-extrabold text-[#A855F7]">${formatINR(dailyAvgSpend)}<span class="text-[10px] font-medium text-slate-400">/day</span></p>
               <p class="text-[10px] text-slate-500 dark:text-slate-400 mt-1">Proj: <strong>${formatINRCompact(projectedMonthEnd)}</strong>/mo</p>
@@ -1674,7 +1675,7 @@
             <div class="p-3.5 rounded-2xl bg-white dark:bg-[#140E2E] border border-slate-200/80 dark:border-purple-900/40 shadow-sm">
               <p class="text-[10px] font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1">Fixed Commitments</p>
               <p class="text-lg font-extrabold text-amber-500">${formatINR(fixedTotal)}</p>
-              <p class="text-[10px] text-slate-500 dark:text-slate-400 mt-1">${fixedPct}% of allowance (EMIs + Subs)</p>
+              <p class="text-[10px] text-slate-500 dark:text-slate-400 mt-1">${fixedSubtitle}</p>
             </div>
           </div>
 
@@ -1918,7 +1919,19 @@
           <span class="text-[10px] opacity-80">Erase everything</span>
         </button>
 
-        <!-- 6. Creator Acknowledgement Badge -->
+        <!-- 6. Support & Feedback -->
+        <div class="p-3.5 rounded-2xl bg-slate-100 dark:bg-[#1D1540] border border-slate-200 dark:border-purple-900/40 space-y-1.5">
+          <p class="text-xs font-extrabold text-slate-900 dark:text-white">💬 Support &amp; Feedback</p>
+          <p class="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+            Encountered an error, have a query, or a suggestion?
+          </p>
+          <a href="mailto:harshit.rajpurohit2012@gmail.com?subject=Valtrix%20App%20%E2%80%94%20Feedback%20%2F%20Support" class="inline-flex items-center gap-1.5 text-xs font-bold text-[#7C3AED] dark:text-[#C084FC] hover:underline break-all pt-0.5">
+            <span>harshit.rajpurohit2012@gmail.com</span>
+            <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>
+          </a>
+        </div>
+
+        <!-- 7. Creator Acknowledgement Badge -->
         <div class="pt-3 mt-1 border-t border-slate-200 dark:border-purple-900/40 flex items-center gap-3">
           <svg width="38" height="38" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" class="shrink-0">
             <defs>
@@ -2058,7 +2071,7 @@
         id: 'cat_' + Date.now(),
         name,
         icon,
-        allowance: 3000,
+        allowance: 0,
         color: '#A855F7',
         lastMonthSpend: 0
       };
@@ -2542,14 +2555,19 @@
       openModal('reset-confirm-modal');
     }
 
-    function confirmResetAllData() {
-      state = getCleanResetState();
+    async function confirmResetAllData() {
+      state = getCleanResetState(state.theme);
       txSearchFilter = '';
       txCategoryFilter = 'all';
-      saveState();
+      clearTimeout(cloudPushTimer);
+      saveStateLocalOnly();
       closeModal('reset-confirm-modal');
       applyTheme();
       renderActiveTab();
+
+      if (currentUser && db) {
+        await pushStateToCloud(false);
+      }
       showToast('All Valtrix data has been reset.');
     }
 
