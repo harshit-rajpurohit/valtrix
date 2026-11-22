@@ -1,0 +1,8 @@
+{
+  "appId": "com.harshit.valtrix",
+  "appName": "Valtrix",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  }
+}
